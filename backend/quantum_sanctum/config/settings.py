@@ -11,6 +11,8 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
 from pathlib import Path
+from decouple import config
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -38,6 +40,9 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'quantum_sanctum.app',
+    'corsheaders',
+    'rest_framework',
+    'api'
 ]
 
 MIDDLEWARE = [
@@ -48,7 +53,10 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
 ]
+
+CORS_ALLOW_ALL_ORIGINS = True
 
 ROOT_URLCONF = 'quantum_sanctum.urls'
 
@@ -76,10 +84,23 @@ WSGI_APPLICATION = 'quantum_sanctum.config.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'databases' / 'db.sqlite3',
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'otp_db',
+        'USER': 'barni',
+        'PASSWORD': 'barni',
+        'HOST': 'localhost',
+        'PORT': '5432',
+        'OPTIONS': {
+            'sslmode': 'disable',
+        },
     }
 }
+
+
+VAULT_ADDR = config('VAULT_ADDR', default='http://127.0.0.1:8200')
+VAULT_TOKEN = config('VAULT_TOKEN', default='your-vault-token')
+TRANSIT_KEY_NAME = config('TRANSIT_KEY_NAME', default='my-encryption-key')
+KYBER_KEM_NAME = config('KYBER_KEM_NAME', default='Kyber512')
 
 
 # Password validation
