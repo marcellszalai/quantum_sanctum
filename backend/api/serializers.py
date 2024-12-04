@@ -1,18 +1,28 @@
 from rest_framework import serializers
-from .models import Session, EncryptedRecord
+from .models import Session, UploadedData
 import base64
 
 class SessionSerializer(serializers.ModelSerializer):
-    publicKey = serializers.SerializerMethodField()
+    kyberPublicKey = serializers.SerializerMethodField()
+    ecdhePublicKey = serializers.SerializerMethodField()
+    shared_symmetric_key = serializers.SerializerMethodField()
 
     class Meta:
         model = Session
-        fields = ['session_id', 'is_valid', 'created_at', 'publicKey']
+        fields = ['session_id', 'created_at', 'kyberPublicKey', 'ecdhePublicKey', 'is_valid', 'uploaded_data', 'shared_symmetric_key']
 
-    def get_publicKey(self, obj):
-        return base64.b64encode(obj.public_key).decode('utf-8')
+    def get_kyberPublicKey(self, obj):
+        return base64.b64encode(obj.kyber_public_key).decode('utf-8')
 
-class EncryptedRecordSerializer(serializers.ModelSerializer):
+    def get_ecdhePublicKey(self, obj):
+        return base64.b64encode(obj.ecdhe_public_key).decode('utf-8')
+
+    def get_shared_symmetric_key(self, obj):
+        return base64.b64encode(obj.shared_symmetric_key).decode('utf-8')
+
+
+# Uploaded Data Serializer
+class UploadedDataSerializer(serializers.ModelSerializer):
     class Meta:
-        model = EncryptedRecord
-        fields = ['id', 'session', 'salt', 'iv', 'data_hash', 'encrypted_data', 'kem_ciphertext', 'created_at']
+        model = UploadedData
+        fields = ['session', 'data', 'uploaded_at']

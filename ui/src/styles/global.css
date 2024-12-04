@@ -1,0 +1,112 @@
+/* Reset default styles */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  
+  body {
+    font-family: 'Helvetica Neue', sans-serif;
+    background-color: #f9f9f9;
+    color: #333;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    height: 100vh;
+    padding: 20px;
+  }
+  
+  .app-container {
+    display: flex;
+    width: 100%;
+    max-width: 1200px;
+  }
+  
+  .tabs {
+    display: flex;
+    flex-direction: column;
+    margin-right: 20px;
+    width: 200px;
+  }
+  
+  .tab {
+    background-color: #e57373;
+    color: white;
+    padding: 12px 20px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 1rem;
+    margin-bottom: 10px;
+    transition: background-color 0.3s ease;
+  }
+  
+  .tab.active,
+  .tab:hover {
+    background-color: #d32f2f;
+  }
+  
+  .content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 20px;
+    background-color: white;
+    border-radius: 10px;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+  }
+  
+  .sidebar {
+    background-color: #fff;
+    padding: 20px;
+    border-radius: 10px;
+    box-shadow: 0 10px 15px rgba(0, 0, 0, 0.1);
+  }
+  
+  .action-button {
+    background-color: #e57373;
+    color: white;
+    padding: 12px 20px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 1rem;
+    transition: all 0.3s ease;
+    width: 100%;
+    margin-top: 10px;
+  }
+  
+  .action-button:hover {
+    background-color: #d32f2f;
+  }
+  
+  input {
+    width: 100%;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid #ddd;
+    font-size: 1rem;
+    margin-top: 10px;
+  }
+  
+  textarea {
+    width: 100%;
+    padding: 10px;
+    margin: 10px 0;
+    border-radius: 8px;
+    border: 1px solid #ddd;
+    font-size: 1rem;
+  }
+  
+  .server-response {
+    margin-top: 20px;
+    background-color: #fafafa;
+    padding: 10px;
+    border-radius: 8px;
+  }
+  
+  pre {
+    background-color: #f4f4f4;
+    padding: 10px;
+    border-radius: 6px;
+  }  

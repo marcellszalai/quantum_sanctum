@@ -1,13 +1,64 @@
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-from .models import Session, EncryptedRecord
-from .serializers import SessionSerializer, EncryptedRecordSerializer
+from .models import Session, UploadedData
+from .serializers import SessionSerializer, UploadedDataSerializer
 import oqs
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad, unpad
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.hashes import SHA256
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import padding
 import os
 import base64
+
+
+# Helper Functions
+
+def derive_symmetric_key(shared_secret):
+    """Derive a symmetric key using HKDF."""
+    return HKDF(
+        algorithm=SHA256(),
+        length=32,
+        salt=None,
+        info=b'session-key',
+    ).derive(shared_secret)
+
+# Modify the encryption to use consistent padding
+def encrypt_with_aes256(aes_key, plaintext):
+    iv = os.urandom(16)
+    cipher = Cipher(algorithms.AES(aes_key), modes.CBC(iv), backend=default_backend())
+    encryptor = cipher.encryptor()
+
+    padded_data = padding.PKCS7(128).padder().update(plaintext.encode()) + padding.PKCS7(128).padder().finalize()
+
+    ciphertext = encryptor.update(padded_data) + encryptor.finalize()
+
+    return base64.b64encode(ciphertext).decode('utf-8'), base64.b64encode(iv).decode('utf-8')
+
+
+# Modify the decryption to handle padding properly
+def decrypt_with_aes256(aes_key, encrypted_data_b64, iv_b64):
+    ciphertext = base64.b64decode(encrypted_data_b64)
+    iv = base64.b64decode(iv_b64)
+
+    cipher = Cipher(algorithms.AES(aes_key), modes.CBC(iv), backend=default_backend())
+    decryptor = cipher.decryptor()
+
+    padded_data = decryptor.update(ciphertext) + decryptor.finalize()
+
+    try:
+        unpadder = padding.PKCS7(128).unpadder()
+        plaintext = unpadder.update(padded_data) + unpadder.finalize()
+        return plaintext.decode('utf-8')
+    except ValueError as e:
+        print(f"Decryption failed: Padding error - {e}")
+        return None
+
+
+
 
 # Session Initiation
 @api_view(['POST'])
@@ -16,62 +67,79 @@ def session_initiate(request):
 
     # Generate Kyber key pair
     with oqs.KeyEncapsulation("Kyber512") as server_kem:
-        server_public_key = server_kem.generate_keypair()
-        server_private_key = server_kem.export_secret_key()
+        kyber_public_key = server_kem.generate_keypair()
+        kyber_private_key = server_kem.export_secret_key()
 
-    # Store keys in the Session model
+    # Generate ECDHE key pair
+    ecdhe_private_key = ec.generate_private_key(ec.SECP256R1())
+    ecdhe_public_key = ecdhe_private_key.public_key()
+
+    # Derive the shared symmetric key using some shared secret (e.g., ECDHE or Kyber)
+    shared_secret = b"some_shared_secret"  # Replace with actual shared secret
+    shared_symmetric_key = derive_symmetric_key(shared_secret)
+
+    # Store the session with the symmetric key
     session = Session.objects.create(
         session_id=session_id,
-        public_key=server_public_key,
-        private_key=server_private_key
+        kyber_private_key=kyber_private_key,
+        kyber_public_key=kyber_public_key,
+        ecdhe_private_key=ecdhe_private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        ),
+        ecdhe_public_key=ecdhe_public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        ),
+        shared_symmetric_key=shared_symmetric_key  # Ensure symmetric key is stored
     )
 
-    # Serialize session data
     serializer = SessionSerializer(session)
     return Response(serializer.data, status=status.HTTP_200_OK)
 
-# Session Verification
-@api_view(['POST'])
-def session_verify(request):
-    session_id = request.data.get('sessionId')
-    is_valid = Session.objects.filter(session_id=session_id, is_valid=True).exists()
-    return Response({'isValid': is_valid}, status=status.HTTP_200_OK)
 
 # Data Upload
 @api_view(['POST'])
 def data_upload(request):
     session_id = request.data.get('sessionId')
     encrypted_data_b64 = request.data.get('encryptedData')
-    salt = request.data.get('salt')
-    iv = request.data.get('iv')
-    data_hash = request.data.get('hash')
-    kem_ciphertext_b64 = request.data.get('kemCiphertext')
+    iv_b64 = request.data.get('iv')
 
-    if not all([session_id, encrypted_data_b64, salt, iv, data_hash, kem_ciphertext_b64]):
+    if not all([session_id, encrypted_data_b64, iv_b64]):
         return Response({'error': 'Missing data'}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         session = Session.objects.get(session_id=session_id, is_valid=True)
+        aes_key = session.shared_symmetric_key
 
-        # Decode the encrypted data and KEM ciphertext from base64
-        encrypted_data = base64.b64decode(encrypted_data_b64)
-        kem_ciphertext = base64.b64decode(kem_ciphertext_b64)
+        if aes_key is None:
+            return Response({'error': 'AES key not found in session'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Store in database
-        EncryptedRecord.objects.create(
-            session=session,
-            salt=salt,
-            iv=iv,
-            data_hash=data_hash,
-            encrypted_data=encrypted_data,
-            kem_ciphertext=kem_ciphertext
-        )
+        # Decrypt data
+        decrypted_data = decrypt_with_aes256(aes_key, encrypted_data_b64, iv_b64)
+        
+        # Debugging: Check decrypted data
+        print(f"Decrypted data: {decrypted_data}")  # Ensure the decrypted data is correct
 
-        return Response({'message': 'Data uploaded successfully'}, status=status.HTTP_200_OK)
+        if decrypted_data:
+            # Save decrypted data into the Session model
+            session.uploaded_data = decrypted_data
+            session.save()  # Save to the database
+
+            print(f"Saved data: {session.uploaded_data}")  # Confirm data has been saved
+        else:
+            print("Decrypted data is empty or invalid")
+
+        return Response({'message': 'Data uploaded successfully', 'decryptedData': decrypted_data}, status=status.HTTP_200_OK)
+
     except Session.DoesNotExist:
         return Response({'error': 'Invalid session'}, status=status.HTTP_400_BAD_REQUEST)
-    except Exception as e:
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    except ValueError as e:
+        return Response({'error': 'Decryption failed: Padding error'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+
 
 # Data Retrieval
 @api_view(['POST'])
@@ -84,63 +152,18 @@ def data_retrieve(request):
 
     try:
         session = Session.objects.get(session_id=session_id, is_valid=True)
-        record = EncryptedRecord.objects.get(id=record_id, session=session)
 
-        # Decapsulate the shared secret using the server's private key and KEM ciphertext
-        with oqs.KeyEncapsulation("Kyber512") as server_kem:
-            server_private_key = session.private_key
-            server_kem.import_secret_key(server_private_key)
-            shared_secret = server_kem.decapsulate(record.kem_ciphertext)
+        # Option 1: Retrieve data from the Session model
+        decrypted_data = session.uploaded_data
 
-        # The shared secret is used as the AES key
-        aes_key = shared_secret[:32]
+        # Option 2: Retrieve data from the separate UploadedData model
+        # uploaded_data = UploadedData.objects.filter(session=session).order_by('-uploaded_at').first()
+        # decrypted_data = uploaded_data.data if uploaded_data else None
 
-        # Decrypt the data
-        decrypted_data_bytes = decrypt_with_aes256(aes_key, record.encrypted_data, record.iv)
-        decrypted_data = decrypted_data_bytes.decode('utf-8')
+        if decrypted_data:
+            return Response({'decryptedData': decrypted_data}, status=status.HTTP_200_OK)
+        else:
+            return Response({'error': 'No data found for this session'}, status=status.HTTP_404_NOT_FOUND)
 
-        # Return data to client
-        return Response({
-            'data': decrypted_data,
-            'salt': record.salt,
-            'iv': record.iv,
-            'hash': record.data_hash,
-        }, status=status.HTTP_200_OK)
-    except (Session.DoesNotExist, EncryptedRecord.DoesNotExist):
-        return Response({'error': 'Invalid session or record'}, status=status.HTTP_400_BAD_REQUEST)
-    except Exception as e:
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-# Session End
-@api_view(['POST'])
-def session_end(request):
-    session_id = request.data.get('sessionId')
-    try:
-        session = Session.objects.get(session_id=session_id)
-        session.is_valid = False
-        session.save()
-        return Response({'message': 'Session ended successfully'}, status=status.HTTP_200_OK)
     except Session.DoesNotExist:
         return Response({'error': 'Invalid session'}, status=status.HTTP_400_BAD_REQUEST)
-
-# Session Health
-@api_view(['GET'])
-def session_health(request):
-    from django.utils import timezone
-    return Response({
-        'status': 'OK',
-        'timeStamp': timezone.now().isoformat(),
-    }, status=status.HTTP_200_OK)
-
-# Encryption Functions
-def encrypt_with_aes256(aes_key, plaintext):
-    cipher = AES.new(aes_key, AES.MODE_CBC)
-    ct_bytes = cipher.encrypt(pad(plaintext, AES.block_size))
-    iv = cipher.iv
-    return ct_bytes, iv
-
-def decrypt_with_aes256(aes_key, ciphertext, iv_hex):
-    iv = bytes.fromhex(iv_hex)
-    cipher = AES.new(aes_key, AES.MODE_CBC, iv)
-    pt = unpad(cipher.decrypt(ciphertext), AES.block_size)
-    return pt
