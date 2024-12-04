@@ -11,7 +11,6 @@ execnet==2.1.1
 hvac==2.3.0
 idna==3.10
 iniconfig==2.0.0
-liboqs-python @ file:///Users/barniszalai/dev/OTP_Hack/quantum_sanctum/backend/liboqs-python
 nose2==0.15.1
 packaging==24.2
 pluggy==1.5.0
