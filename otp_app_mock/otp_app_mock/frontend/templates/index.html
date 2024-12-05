@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CVC API Tester</title>
+</head>
+<body>
+    <h1>Enter CVC Code</h1>
+    <form id="cvcForm" method="POST" action="/process-cvc/">
+        {% csrf_token %}
+        <label for="cvc">CVC Code:</label>
+        <input type="text" id="cvc" name="cvc" required>
+        <button type="submit">Submit</button>
+    </form>
+    <h2>Results:</h2>
+    <div id="results">
+        <!-- Retrieved results will appear here -->
+    </div>
+</body>
+</html>
