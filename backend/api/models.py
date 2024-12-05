@@ -5,8 +5,9 @@ from datetime import timedelta
 class Session(models.Model):
     session_id = models.CharField(max_length=255, unique=True)
     ecdhe_private_key = models.BinaryField(blank=True, null=True)  # Server's ECDHE private key
-    kyber_public_key = models.BinaryField(blank=True, null=True)  # Kyber public key for storage
-    kyber_private_key = models.BinaryField(blank=True, null=True)  # Kyber private key for storage
+    ecdhe_public_key = models.BinaryField(blank=True, null=True)  # Server's ECDHE public key
+    kyber_public_key = models.BinaryField(blank=True, null=True)  # Kyber public key
+    kyber_private_key = models.BinaryField(blank=True, null=True)  # Kyber private key
     is_valid = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField(default=None, null=True, blank=True)
