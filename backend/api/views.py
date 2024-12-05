@@ -117,6 +117,8 @@ def session_initiate(request):
         "sessionId": session_id,
         "ecdhePublicKey": session.ecdhe_public_key.decode(),
         "kyberPublicKey": base64.b64encode(kyber_public_key).decode(),
+        "created_at": session.created_at.isoformat(),
+        "expires_at": session.expires_at.isoformat() if session.expires_at else None,
     }
     return Response(response_data, status=status.HTTP_200_OK)
 
