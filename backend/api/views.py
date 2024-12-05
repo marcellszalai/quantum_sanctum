@@ -1,7 +1,3 @@
-import os
-import base64
-import oqs
-from django.core.exceptions import ImproperlyConfigured
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -11,17 +7,13 @@ from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.hazmat.primitives import serialization, padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
+import oqs
+import os
+import base64
 from .models import Session, UploadedData
-from .serializers import SessionSerializer
+from .serializers import SessionSerializer, UploadedDataSerializer
 
-# Load MASTER_KEY from environment (base64 encoded)
-master_key_b64 = os.environ.get('MASTER_KEY')
-if not master_key_b64:
-    raise ImproperlyConfigured("MASTER_KEY environment variable must be set.")
-master_key = base64.b64decode(master_key_b64)
-if len(master_key) != 32:
-    raise ImproperlyConfigured("MASTER_KEY must decode to 32 bytes.")
-
+# Helper Functions
 def aes_encrypt(key, plaintext_bytes):
     iv = os.urandom(16)
     cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
@@ -31,6 +23,7 @@ def aes_encrypt(key, plaintext_bytes):
     ciphertext = encryptor.update(padded) + encryptor.finalize()
     return ciphertext, iv
 
+
 def aes_decrypt(key, ciphertext, iv):
     cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
     decryptor = cipher.decryptor()
@@ -39,160 +32,171 @@ def aes_decrypt(key, ciphertext, iv):
     plaintext = unpadder.update(padded) + unpadder.finalize()
     return plaintext
 
-def derive_symmetric_key(shared_secret):
-    return HKDF(
-        algorithm=SHA256(),
-        length=32,
-        salt=None,
-        info=b'session-key',
-    ).derive(shared_secret)
-
+# Views
 @api_view(['POST'])
 def session_initiate(request):
-    # Server generates ephemeral keys
+    """Initiates a session and provides ECDHE public key to the client."""
     session_id = os.urandom(16).hex()
+
+    # Generate ECDHE keys (server-side)
+    ecdhe_private_key = ec.generate_private_key(ec.SECP256R1())
+    ecdhe_public_key = ecdhe_private_key.public_key()
+
+    # Generate Kyber keys for post-quantum storage
     with oqs.KeyEncapsulation("Kyber512") as server_kem:
         kyber_public_key = server_kem.generate_keypair()
         kyber_private_key = server_kem.export_secret_key()
 
-    ecdhe_private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
-    ecdhe_public_key = ecdhe_private_key.public_key()
-
+    # Store ECDHE private key and Kyber keys in the session
     session = Session.objects.create(
         session_id=session_id,
-        kyber_private_key=kyber_private_key,
-        kyber_public_key=kyber_public_key,
         ecdhe_private_key=ecdhe_private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption()
+            encryption_algorithm=serialization.NoEncryption(),
         ),
-        ecdhe_public_key=ecdhe_public_key.public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo
-        )
+        kyber_public_key=kyber_public_key,
+        kyber_private_key=kyber_private_key,
     )
     session.set_expiration(minutes=5)
-    serializer = SessionSerializer(session)
-    return Response(serializer.data, status=status.HTTP_200_OK)
 
-@api_view(['POST'])
-def session_finalize(request):
-    # Client doesn't provide PQC data. The server simulates the client side internally.
-    session_id = request.data.get('sessionId')
-    if not session_id:
-        return Response({'error': 'Missing sessionId'}, status=status.HTTP_400_BAD_REQUEST)
-
-    try:
-        session = Session.objects.get(session_id=session_id, is_valid=True)
-    except Session.DoesNotExist:
-        return Response({'error': 'Invalid session'}, status=status.HTTP_400_BAD_REQUEST)
-
-    if session.has_expired():
-        return Response({'error': 'Session has expired'}, status=status.HTTP_400_BAD_REQUEST)
-
-    # Simulate client side (server does both ends)
-    # "Client" Kyber and ECDH keys
-    with oqs.KeyEncapsulation("Kyber512", secret_key=None) as client_kem:
-        # Encapsulate using the server's kyber_public_key
-        ciphertext, kyber_ss = client_kem.encap_secret(bytes(session.kyber_public_key))
-
-    server_private_key = serialization.load_pem_private_key(
-        session.ecdhe_private_key, password=None, backend=default_backend()
+    # Send ECDHE public key and session ID to the client
+    serialized_public_key = ecdhe_public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
     )
-    server_public_key = serialization.load_pem_public_key(
-        session.ecdhe_public_key, backend=default_backend()
-    )
+    response_data = {
+        "sessionId": session_id,
+        "ecdhePublicKey": serialized_public_key.decode(),
+    }
+    return Response(response_data, status=status.HTTP_200_OK)
 
-    # "Client" ECDHE keys
-    client_ecdhe_private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
-    client_ecdhe_public_key = client_ecdhe_private_key.public_key()
-    ecdh_shared_secret = client_ecdhe_private_key.exchange(ec.ECDH(), server_public_key)
-
-    # Decapsulate Kyber ciphertext with the server's private key
-    with oqs.KeyEncapsulation("Kyber512", secret_key=bytes(session.kyber_private_key)) as server_kem:
-        server_kyber_ss = server_kem.decap_secret(ciphertext)
-
-    combined_secret = kyber_ss + ecdh_shared_secret
-    shared_symmetric_key = derive_symmetric_key(combined_secret)
-
-    # Encrypt shared_symmetric_key with MASTER_KEY
-    enc_key, iv = aes_encrypt(master_key, shared_symmetric_key)
-    session.encrypted_shared_symmetric_key = enc_key + iv
-
-    # Remove ephemeral keys for forward secrecy
-    session.kyber_private_key = b''
-    session.kyber_public_key = b''
-    session.ecdhe_private_key = b''
-    session.ecdhe_public_key = b''
-
-    session.save()
-    return Response({'message': 'Session finalized successfully'}, status=status.HTTP_200_OK)
-
-def get_shared_symmetric_key(session):
-    """Retrieve and decrypt the session's symmetric key using MASTER_KEY."""
-    if not session.encrypted_shared_symmetric_key:
-        return None
-    enc_data = session.encrypted_shared_symmetric_key
-    enc_key = enc_data[:-16]
-    iv = enc_data[-16:]
-    return aes_decrypt(master_key, enc_key, iv)
 
 @api_view(['POST'])
 def data_upload(request):
-    session_id = request.data.get('sessionId')
-    plaintext = request.data.get('plaintext')  # now we assume client sends plaintext
+    """Receives client-encrypted data, decrypts it, and re-encrypts it using Kyber."""
+    session_id = request.data.get("sessionId")
+    client_public_key_pem = request.data.get("clientPublicKey")
+    encrypted_data = base64.b64decode(request.data.get("encryptedData"))
+    iv = base64.b64decode(request.data.get("iv"))
 
-    if not all([session_id, plaintext]):
-        return Response({'error': 'Missing data'}, status=status.HTTP_400_BAD_REQUEST)
+    if not all([session_id, client_public_key_pem, encrypted_data, iv]):
+        return Response({"error": "Missing data"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         session = Session.objects.get(session_id=session_id, is_valid=True)
     except Session.DoesNotExist:
-        return Response({'error': 'Invalid session'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "Invalid session"}, status=status.HTTP_400_BAD_REQUEST)
 
     if session.has_expired():
-        return Response({'error': 'Session has expired'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "Session has expired"}, status=status.HTTP_400_BAD_REQUEST)
 
-    aes_key = get_shared_symmetric_key(session)
-    if aes_key is None:
-        return Response({'error': 'Session key not established yet'}, status=status.HTTP_400_BAD_REQUEST)
-
-    # Server encrypts data before storing
-    ciphertext, iv = aes_encrypt(aes_key, plaintext.encode('utf-8'))
-    data_record = UploadedData.objects.create(
-        session=session,
-        encrypted_data=ciphertext,
-        iv=iv
+    # Derive shared secret using ECDHE
+    server_private_key = serialization.load_pem_private_key(
+        session.ecdhe_private_key, password=None, backend=default_backend()
     )
+    client_public_key = serialization.load_pem_public_key(
+        client_public_key_pem.encode(), backend=default_backend()
+    )
+    shared_secret = server_private_key.exchange(ec.ECDH(), client_public_key)
 
-    return Response({'message': 'Data uploaded successfully', 'recordId': data_record.id}, status=status.HTTP_200_OK)
+    # Derive symmetric key from shared secret
+    symmetric_key = HKDF(
+        algorithm=SHA256(),
+        length=32,
+        salt=None,
+        info=b"session-key",
+    ).derive(shared_secret)
+
+    # Decrypt client data
+    plaintext = aes_decrypt(symmetric_key, encrypted_data, iv)
+
+    # Encrypt plaintext using Kyber-derived key
+    with oqs.KeyEncapsulation("Kyber512", secret_key=session.kyber_private_key) as server_kem:
+        kyber_key = server_kem.export_secret_key()[:32]
+    kyber_cipher = Cipher(algorithms.AES(kyber_key), modes.CBC(iv), backend=default_backend())
+    encryptor = kyber_cipher.encryptor()
+    padder = padding.PKCS7(128).padder()
+    padded_plaintext = padder.update(plaintext) + padder.finalize()
+    encrypted_data_kyber = encryptor.update(padded_plaintext) + encryptor.finalize()
+    print("encrypted data kyber: ")
+    print(encrypted_data_kyber)
+
+    # Store Kyber-encrypted data
+    UploadedData.objects.create(session=session, encrypted_data=encrypted_data_kyber, iv=iv)
+
+    return Response({"message": "Data uploaded and stored securely."}, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+def list_uploaded_data(request, session_id):
+    """Lists all data uploaded for a specific session."""
+    try:
+        session = Session.objects.get(session_id=session_id, is_valid=True)
+    except Session.DoesNotExist:
+        return Response({"error": "Invalid session"}, status=status.HTTP_400_BAD_REQUEST)
+
+    if session.has_expired():
+        return Response({"error": "Session has expired"}, status=status.HTTP_400_BAD_REQUEST)
+
+    uploaded_data = UploadedData.objects.filter(session=session)
+    serializer = UploadedDataSerializer(uploaded_data, many=True)
+    return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 @api_view(['POST'])
-def data_retrieve(request):
-    session_id = request.data.get('sessionId')
-    record_id = request.data.get('recordId')
+def retrieve_data(request):
+    """Retrieves a specific data entry and returns its plaintext."""
+    session_id = request.data.get("sessionId")
+    data_id = request.data.get("dataId")
+    client_public_key_pem = request.data.get("clientPublicKey")
 
-    if not all([session_id, record_id]):
-        return Response({'error': 'Missing data'}, status=status.HTTP_400_BAD_REQUEST)
+    if not all([session_id, data_id, client_public_key_pem]):
+        return Response({"error": "Missing data"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         session = Session.objects.get(session_id=session_id, is_valid=True)
     except Session.DoesNotExist:
-        return Response({'error': 'Invalid session'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "Invalid session"}, status=status.HTTP_400_BAD_REQUEST)
 
     if session.has_expired():
-        return Response({'error': 'Session has expired'}, status=status.HTTP_400_BAD_REQUEST)
-
-    aes_key = get_shared_symmetric_key(session)
-    if aes_key is None:
-        return Response({'error': 'Session key not established yet'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "Session has expired"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        data_record = UploadedData.objects.get(id=record_id, session=session)
+        data_entry = UploadedData.objects.get(id=data_id, session=session)
     except UploadedData.DoesNotExist:
-        return Response({'error': 'No data found for this record'}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"error": "No data found for this ID in this session"}, status=status.HTTP_404_NOT_FOUND)
 
-    # Decrypt the stored data
-    decrypted_plaintext = aes_decrypt(aes_key, data_record.encrypted_data, data_record.iv).decode('utf-8')
-    return Response({'plaintext': decrypted_plaintext}, status=status.HTTP_200_OK)
+    # Derive shared secret using ECDHE
+    server_private_key = serialization.load_pem_private_key(
+        session.ecdhe_private_key, password=None, backend=default_backend()
+    )
+    client_public_key = serialization.load_pem_public_key(
+        client_public_key_pem.encode(), backend=default_backend()
+    )
+    shared_secret = server_private_key.exchange(ec.ECDH(), client_public_key)
+
+    # Derive symmetric key from shared secret
+    symmetric_key = HKDF(
+        algorithm=SHA256(),
+        length=32,
+        salt=None,
+        info=b"session-key",
+    ).derive(shared_secret)
+
+    # Decrypt the stored data using Kyber-derived key
+    with oqs.KeyEncapsulation("Kyber512", secret_key=session.kyber_private_key) as server_kem:
+        kyber_key = server_kem.export_secret_key()[:32]
+    kyber_cipher = Cipher(algorithms.AES(kyber_key), modes.CBC(data_entry.iv), backend=default_backend())
+    decryptor = kyber_cipher.decryptor()
+    unpadder = padding.PKCS7(128).unpadder()
+    decrypted_padded_data = decryptor.update(data_entry.encrypted_data) + decryptor.finalize()
+    plaintext = unpadder.update(decrypted_padded_data) + unpadder.finalize()
+
+    # Encrypt the plaintext with the ECDHE-derived symmetric key
+    encrypted_data, iv = aes_encrypt(symmetric_key, plaintext)  # Pass plaintext as bytes
+
+    return Response({
+        "encryptedData": base64.b64encode(encrypted_data).decode(),
+        "iv": base64.b64encode(iv).decode(),
+    }, status=status.HTTP_200_OK)

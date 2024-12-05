@@ -3,7 +3,7 @@ from . import views
 
 urlpatterns = [
     path('session/initiate', views.session_initiate, name='session_initiate'),
-    path('session/finalize', views.session_finalize, name='session_finalize'),
     path('data/upload', views.data_upload, name='data_upload'),
-    path('data/retrieve', views.data_retrieve, name='data_retrieve'),
+    path('data/list/<str:session_id>', views.list_uploaded_data, name='list_uploaded_data'),
+    path('data/retrieve', views.retrieve_data, name='retrieve_data'),  # Now uses POST
 ]
