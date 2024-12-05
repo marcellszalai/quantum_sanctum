@@ -250,12 +250,10 @@ def retrieve_data(request):
     # Decrypt data
     print("Backend: Decrypting the stored data...")
     plaintext = aes_decrypt(shared_key, data_entry.encrypted_data, data_entry.iv)
-    print(f"Backend: Decrypted plaintext: {plaintext.decode()}")
 
     return Response({
         "encryptedData": base64.b64encode(data_entry.encrypted_data).decode(),
-        "iv": base64.b64encode(data_entry.iv).decode(),
-        "plaintext": plaintext.decode()
+        "iv": base64.b64encode(data_entry.iv).decode()
     }, status=status.HTTP_200_OK)
 
 
