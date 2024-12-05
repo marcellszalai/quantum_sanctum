@@ -2,6 +2,26 @@
 <html>
 <head>
     <title>CVC API Tester</title>
+    <style>
+        table {
+            width: 50%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        table, th, td {
+            border: 1px solid black;
+        }
+
+        th, td {
+            padding: 8px;
+            text-align: left;
+        }
+
+        #cvcForm {
+            margin-bottom: 20px;
+        }
+    </style>
 </head>
 <body>
     <h1>Enter CVC Code</h1>
@@ -11,9 +31,29 @@
         <input type="text" id="cvc" name="cvc" required>
         <button type="submit">Submit</button>
     </form>
-    <h2>Results:</h2>
-    <div id="results">
-        <!-- Retrieved results will appear here -->
-    </div>
+
+    <h2>Submitted CVC Codes:</h2>
+    {% if cvc_list %}
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>CVC Code</th>
+                <th>Uploaded At</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for cvc in cvc_list %}
+            <tr>
+                <td>{{ forloop.counter }}</td>
+                <td>{{ cvc }}</td>
+                <td>{{ upload_times|get_item:forloop.counter0 }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No CVC codes submitted yet.</p>
+    {% endif %}
 </body>
 </html>
