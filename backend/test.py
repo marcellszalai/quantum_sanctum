@@ -4,22 +4,14 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives import serialization, padding
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import serialization
 import os
 
 # Server base URL
 BASE_URL = "http://127.0.0.1:8000/api"
 CVC_CODE = "747"  # The data to be stored securely
 
-def aes_decrypt(key, ciphertext, iv):
-    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
-    decryptor = cipher.decryptor()
-    padded = decryptor.update(ciphertext) + decryptor.finalize()
-    unpadder = padding.PKCS7(128).unpadder()
-    plaintext = unpadder.update(padded) + unpadder.finalize()
-    return plaintext
 
 def generate_ecdhe_keys():
     """Generates ECDHE key pair."""
@@ -30,6 +22,7 @@ def generate_ecdhe_keys():
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     )
     return private_key, public_key_pem
+
 
 def derive_shared_secret(private_key, server_public_key_pem):
     """Derives a shared secret using ECDHE."""
@@ -45,6 +38,7 @@ def derive_shared_secret(private_key, server_public_key_pem):
     ).derive(shared_secret)
     return derived_key
 
+
 def encrypt_data(key, plaintext):
     """Encrypts plaintext using AES."""
     iv = os.urandom(16)
@@ -54,6 +48,17 @@ def encrypt_data(key, plaintext):
     padded_data = padder.update(plaintext.encode('utf-8')) + padder.finalize()
     encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
     return encrypted_data, iv
+
+
+def decrypt_data(key, encrypted_data, iv):
+    """Decrypts data using AES."""
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    decryptor = cipher.decryptor()
+    unpadder = padding.PKCS7(128).unpadder()
+    padded_data = decryptor.update(encrypted_data) + decryptor.finalize()
+    plaintext = unpadder.update(padded_data) + unpadder.finalize()
+    return plaintext.decode('utf-8')
+
 
 def session_initiate():
     """Initiates a session with the server."""
@@ -67,12 +72,12 @@ def session_initiate():
         print(f"Failed to initiate session: {response.text}")
         return None, None
 
+
 def upload_data(session_id, public_key_pem, encrypted_data, iv):
     """Uploads encrypted data to the server."""
     url = f"{BASE_URL}/data/upload"
     payload = {
         "sessionId": session_id,
-        "clientPublicKey": public_key_pem.decode(),
         "encryptedData": base64.b64encode(encrypted_data).decode(),
         "iv": base64.b64encode(iv).decode(),
     }
@@ -81,6 +86,7 @@ def upload_data(session_id, public_key_pem, encrypted_data, iv):
         print("Data uploaded successfully.")
     else:
         print(f"Failed to upload data: {response.text}")
+
 
 def list_uploaded_data(session_id):
     """Fetches a list of all data uploaded for a session."""
@@ -96,7 +102,7 @@ def list_uploaded_data(session_id):
 
 
 def retrieve_data(session_id, data_id, private_key, server_public_key_pem):
-    """Fetches a specific data entry and decrypts the plaintext."""
+    """Fetches a specific data entry and decrypts it."""
     # Derive shared secret with the server's public key
     shared_key = derive_shared_secret(private_key, server_public_key_pem)
 
@@ -105,7 +111,6 @@ def retrieve_data(session_id, data_id, private_key, server_public_key_pem):
     payload = {
         "sessionId": session_id,
         "dataId": data_id,
-        "clientPublicKey": client_public_key_pem.decode(),
     }
     response = requests.post(url, json=payload)
     if response.status_code == 200:
@@ -113,8 +118,8 @@ def retrieve_data(session_id, data_id, private_key, server_public_key_pem):
         encrypted_data = base64.b64decode(data["encryptedData"])
         iv = base64.b64decode(data["iv"])
 
-        # Decrypt the encrypted data using the shared key
-        plaintext = aes_decrypt(shared_key, encrypted_data, iv).decode('utf-8')
+        # Decrypt the data using the shared key
+        plaintext = decrypt_data(shared_key, encrypted_data, iv)
         print(f"Retrieved plaintext: {plaintext}")
         return plaintext
     else:

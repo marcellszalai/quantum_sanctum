@@ -74,13 +74,12 @@ def session_initiate(request):
 
 @api_view(['POST'])
 def data_upload(request):
-    """Receives client-encrypted data, decrypts it, and re-encrypts it using Kyber."""
+    """Receives client-encrypted data and adds a Kyber encryption layer."""
     session_id = request.data.get("sessionId")
-    client_public_key_pem = request.data.get("clientPublicKey")
     encrypted_data = base64.b64decode(request.data.get("encryptedData"))
     iv = base64.b64decode(request.data.get("iv"))
 
-    if not all([session_id, client_public_key_pem, encrypted_data, iv]):
+    if not all([session_id, encrypted_data, iv]):
         return Response({"error": "Missing data"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
@@ -91,41 +90,18 @@ def data_upload(request):
     if session.has_expired():
         return Response({"error": "Session has expired"}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Derive shared secret using ECDHE
-    server_private_key = serialization.load_pem_private_key(
-        session.ecdhe_private_key, password=None, backend=default_backend()
-    )
-    client_public_key = serialization.load_pem_public_key(
-        client_public_key_pem.encode(), backend=default_backend()
-    )
-    shared_secret = server_private_key.exchange(ec.ECDH(), client_public_key)
-
-    # Derive symmetric key from shared secret
-    symmetric_key = HKDF(
-        algorithm=SHA256(),
-        length=32,
-        salt=None,
-        info=b"session-key",
-    ).derive(shared_secret)
-
-    # Decrypt client data
-    plaintext = aes_decrypt(symmetric_key, encrypted_data, iv)
-
-    # Encrypt plaintext using Kyber-derived key
+    # Add Kyber encryption
     with oqs.KeyEncapsulation("Kyber512", secret_key=session.kyber_private_key) as server_kem:
         kyber_key = server_kem.export_secret_key()[:32]
     kyber_cipher = Cipher(algorithms.AES(kyber_key), modes.CBC(iv), backend=default_backend())
     encryptor = kyber_cipher.encryptor()
-    padder = padding.PKCS7(128).padder()
-    padded_plaintext = padder.update(plaintext) + padder.finalize()
-    encrypted_data_kyber = encryptor.update(padded_plaintext) + encryptor.finalize()
-    print("encrypted data kyber: ")
-    print(encrypted_data_kyber)
+    padded_data = padding.PKCS7(128).padder().update(encrypted_data) + padding.PKCS7(128).padder().finalize()
+    kyber_encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
 
     # Store Kyber-encrypted data
-    UploadedData.objects.create(session=session, encrypted_data=encrypted_data_kyber, iv=iv)
+    UploadedData.objects.create(session=session, encrypted_data=kyber_encrypted_data, iv=iv)
 
-    return Response({"message": "Data uploaded and stored securely."}, status=status.HTTP_200_OK)
+    return Response({"message": "Data uploaded and secured with Kyber."}, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])
@@ -146,12 +122,11 @@ def list_uploaded_data(request, session_id):
 
 @api_view(['POST'])
 def retrieve_data(request):
-    """Retrieves a specific data entry and returns its plaintext."""
+    """Decrypts Kyber layer and returns client-encrypted data."""
     session_id = request.data.get("sessionId")
     data_id = request.data.get("dataId")
-    client_public_key_pem = request.data.get("clientPublicKey")
 
-    if not all([session_id, data_id, client_public_key_pem]):
+    if not all([session_id, data_id]):
         return Response({"error": "Missing data"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
@@ -167,36 +142,16 @@ def retrieve_data(request):
     except UploadedData.DoesNotExist:
         return Response({"error": "No data found for this ID in this session"}, status=status.HTTP_404_NOT_FOUND)
 
-    # Derive shared secret using ECDHE
-    server_private_key = serialization.load_pem_private_key(
-        session.ecdhe_private_key, password=None, backend=default_backend()
-    )
-    client_public_key = serialization.load_pem_public_key(
-        client_public_key_pem.encode(), backend=default_backend()
-    )
-    shared_secret = server_private_key.exchange(ec.ECDH(), client_public_key)
-
-    # Derive symmetric key from shared secret
-    symmetric_key = HKDF(
-        algorithm=SHA256(),
-        length=32,
-        salt=None,
-        info=b"session-key",
-    ).derive(shared_secret)
-
-    # Decrypt the stored data using Kyber-derived key
+    # Decrypt Kyber layer
     with oqs.KeyEncapsulation("Kyber512", secret_key=session.kyber_private_key) as server_kem:
         kyber_key = server_kem.export_secret_key()[:32]
     kyber_cipher = Cipher(algorithms.AES(kyber_key), modes.CBC(data_entry.iv), backend=default_backend())
     decryptor = kyber_cipher.decryptor()
     unpadder = padding.PKCS7(128).unpadder()
-    decrypted_padded_data = decryptor.update(data_entry.encrypted_data) + decryptor.finalize()
-    plaintext = unpadder.update(decrypted_padded_data) + unpadder.finalize()
-
-    # Encrypt the plaintext with the ECDHE-derived symmetric key
-    encrypted_data, iv = aes_encrypt(symmetric_key, plaintext)  # Pass plaintext as bytes
+    padded_data = decryptor.update(data_entry.encrypted_data) + decryptor.finalize()
+    client_encrypted_data = unpadder.update(padded_data) + unpadder.finalize()
 
     return Response({
-        "encryptedData": base64.b64encode(encrypted_data).decode(),
-        "iv": base64.b64encode(iv).decode(),
+        "encryptedData": base64.b64encode(client_encrypted_data).decode(),
+        "iv": base64.b64encode(data_entry.iv).decode(),
     }, status=status.HTTP_200_OK)
